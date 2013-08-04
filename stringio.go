@@ -13,20 +13,16 @@ import (
 
 var buffer = make([]byte, 1024)
 
-// Read reads n bytes from the given reader,
+// Read reads n bytes from the given io.Reader,
 // and returns those bytes as a string.
-// If the reader provides fewer than n bytes,
+// If the io.Reader provides fewer than n bytes,
 // whatever bytes were returned (even if 0
 // bytes were returned) will be used to create
 // the result string. The returned int and error
 // values are taken directly from the return values
 // of r.Read().
 func Read(r io.Reader, n int) (int, string, error) {
-	if cap(buffer) < n {
-		newLen := leastPowerOfTwoFunc(n)
-		buffer = make([]byte, newLen)
-	}
-	buffer = buffer[:n]
+	extendAndSliceBuffer(n)
 	n, err := r.Read(buffer)
 
 	buffer = buffer[:n]
@@ -38,17 +34,69 @@ func Read(r io.Reader, n int) (int, string, error) {
 // passes it to w.Write(). The return values
 // are passed unmodified from the call to
 // w.Write().
+//
+// Write is identical in behavior to
+// io.WriteString, although it will usually
+// be somewhat more performant since it
+// avoids reallocating len(str) bytes
+// if possible.
 func Write(w io.Writer, str string) (int, error) {
+	// We could in theory take a page out of
+	// io.WriteString's book at check if the
+	// given io.Writer has a WriteString method.
+	// However, such a method would probably
+	// reallocate just like io.WriteString does,
+	// so avoiding that will probably more efficient.
+	//
+	// (See http://golang.org/src/pkg/io/io.go?s=9270:9325#L254
+	// for the source of io.WriteString)
 	n := len(str)
-	if cap(buffer) < n {
-		newLen := leastPowerOfTwoFunc(n)
-		buffer = make([]byte, newLen)
-	}
-	buffer = buffer[:n]
+	extendAndSliceBuffer(n)
 	for i := 0; i < n; i++ {
 		buffer[i] = str[i]
 	}
 	return w.Write(buffer)
+}
+
+// ReadAt reads n bytes from the given io.ReaderAt,
+// and returns those bytes as a string. If the
+// io.ReaderAt provides fewer than n bytes, whatever
+// bytes were provided (even if 0 bytes were provided)
+// will be used to create the result string. The
+// returned int and error values are taken directly
+// from the return values of r.ReadAt()
+func ReadAt(r io.ReaderAt, n int, off int64) (int, string, error) {
+	extendAndSliceBuffer(n)
+	n, err := r.ReadAt(buffer, off)
+
+	buffer = buffer[:n]
+	str := string(buffer)
+	return n, str, err
+}
+
+// WriteAt converts str to a byte slice and
+// passes it to w.WriteAt() along with off.
+// The return values are passed unmodified
+// from the call to w.WriteAt().
+func WriteAt(w io.WriterAt, str string, off int64) (int, error) {
+	n := len(str)
+	extendAndSliceBuffer(n)
+	for i := 0; i < n; i++ {
+		buffer[i] = str[i]
+	}
+	return w.WriteAt(buffer, off)
+}
+
+// If cap(buffer) < n, reallocate
+// the buffer so that its capacity
+// is the least power of two larger
+// than n. Slice buffer so that its
+// length is equal to n.
+func extendAndSliceBuffer(n int) {
+	if cap(buffer) < n {
+		buffer = make([]byte, leastPowerOfTwoFunc(n))
+	}
+	buffer = buffer[:n]
 }
 
 // This will be set to the correct
@@ -73,6 +121,8 @@ func leastPowerOfTwoGreaterThan_64B(n int) int {
 	n-- // make sure it's not already a power of 2
 	n |= (n >> 1)
 	n |= (n >> 2)
+	n |= (n >> 4)
+	n |= (n >> 8)
 	n |= (n >> 16)
 	n |= (n >> 32)
 	return n + 1
