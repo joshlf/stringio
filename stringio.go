@@ -8,10 +8,26 @@
 package stringio
 
 import (
+	"github.com/joshlf13/sync"
 	"io"
 )
 
-var buffer = make([]byte, 1024)
+// The strategy is to use this buffer as scratch space
+// when possible. However, we don't want two goroutines
+// using it as scratch space simultaneously. Thus, the
+// mutex is used to make sure that only one goroutine
+// at a time uses the buffer. However, we don't want
+// to force only one call to this package to happen
+// at a time, so if the lock can't be acquired, simply
+// go with the more expensive solution and allocate a
+// temporary buffer. The reasoning here is that in most
+// applications, these lockouts will be rare, so while
+// they are expensive when they do happen, the overall
+// cost is relatively small.
+var (
+	buffer = make([]byte, 1024)
+	mutex  sync.Mutex
+)
 
 // Read reads n bytes from the given io.Reader,
 // and returns those bytes as a string.
@@ -22,11 +38,28 @@ var buffer = make([]byte, 1024)
 // values are taken directly from the return values
 // of r.Read().
 func Read(r io.Reader, n int) (int, string, error) {
+	if mutex.LockIfPossible() {
+		defer mutex.Unlock()
+		return readWithBuffer(r, n)
+	}
+	return readWithoutBuffer(r, n)
+}
+
+func readWithBuffer(r io.Reader, n int) (int, string, error) {
 	extendAndSliceBuffer(n)
 	n, err := r.Read(buffer)
 
 	buffer = buffer[:n]
 	str := string(buffer)
+	return n, str, err
+}
+
+func readWithoutBuffer(r io.Reader, n int) (int, string, error) {
+	buf := make([]byte, n)
+	n, err := r.Read(buf)
+
+	buf = buf[:n]
+	str := string(buf)
 	return n, str, err
 }
 
@@ -41,6 +74,14 @@ func Read(r io.Reader, n int) (int, string, error) {
 // avoids reallocating len(str) bytes
 // if possible.
 func Write(w io.Writer, str string) (int, error) {
+	if mutex.LockIfPossible() {
+		defer mutex.Unlock()
+		return writeWithBuffer(w, str)
+	}
+	return writeWithoutBuffer(w, str)
+}
+
+func writeWithBuffer(w io.Writer, str string) (int, error) {
 	// We could in theory take a page out of
 	// io.WriteString's book at check if the
 	// given io.Writer has a WriteString method.
@@ -58,6 +99,22 @@ func Write(w io.Writer, str string) (int, error) {
 	return w.Write(buffer)
 }
 
+type stringWriter interface {
+	WriteString(string) (int, error)
+}
+
+func writeWithoutBuffer(w io.Writer, str string) (int, error) {
+	// Since we don't have the buffer available,
+	// a copy is going to have to happen. Thus,
+	// even if sw.WriteString does a copy, it
+	// will be no more expensive than if we had
+	// done it ourselves.
+	if sw, ok := w.(stringWriter); ok {
+		return sw.WriteString(str)
+	}
+	return w.Write([]byte(str))
+}
+
 // ReadAt reads n bytes from the given io.ReaderAt,
 // and returns those bytes as a string. If the
 // io.ReaderAt provides fewer than n bytes, whatever
@@ -66,6 +123,14 @@ func Write(w io.Writer, str string) (int, error) {
 // returned int and error values are taken directly
 // from the return values of r.ReadAt()
 func ReadAt(r io.ReaderAt, n int, off int64) (int, string, error) {
+	if mutex.LockIfPossible() {
+		defer mutex.Unlock()
+		return readAtWithBuffer(r, n, off)
+	}
+	return readAtWithoutBuffer(r, n, off)
+}
+
+func readAtWithBuffer(r io.ReaderAt, n int, off int64) (int, string, error) {
 	extendAndSliceBuffer(n)
 	n, err := r.ReadAt(buffer, off)
 
@@ -74,17 +139,38 @@ func ReadAt(r io.ReaderAt, n int, off int64) (int, string, error) {
 	return n, str, err
 }
 
+func readAtWithoutBuffer(r io.ReaderAt, n int, off int64) (int, string, error) {
+	buf := make([]byte, n)
+	n, err := r.ReadAt(buf, off)
+
+	buf = buf[:n]
+	str := string(buf)
+	return n, str, err
+}
+
 // WriteAt converts str to a byte slice and
 // passes it to w.WriteAt() along with off.
 // The return values are passed unmodified
 // from the call to w.WriteAt().
 func WriteAt(w io.WriterAt, str string, off int64) (int, error) {
+	if mutex.LockIfPossible() {
+		defer mutex.Unlock()
+		return writeAtWithBuffer(w, str, off)
+	}
+	return writeAtWithoutBuffer(w, str, off)
+}
+
+func writeAtWithBuffer(w io.WriterAt, str string, off int64) (int, error) {
 	n := len(str)
 	extendAndSliceBuffer(n)
 	for i := 0; i < n; i++ {
 		buffer[i] = str[i]
 	}
 	return w.WriteAt(buffer, off)
+}
+
+func writeAtWithoutBuffer(w io.WriterAt, str string, off int64) (int, error) {
+	return w.WriteAt([]byte(str), off)
 }
 
 // If cap(buffer) < n, reallocate

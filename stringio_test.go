@@ -8,8 +8,15 @@ import (
 	"strings"
 	// "bufio"
 	"bytes"
+	"sync"
 	"testing"
 )
+
+// Test a highly-parallel approach to make sure
+// that the buffer blocking strategy works
+// (ie, that we don't use the same buffer as
+// scratch space in multiple goroutines simultaneously)
+const threads = 1000
 
 var testStrings = []string{
 	"abc 123", // generic test
@@ -19,12 +26,22 @@ var testStrings = []string{
 }
 
 func TestRead(t *testing.T) {
-	for _, s := range testStrings {
-		testRead(s, t)
+	w := new(sync.WaitGroup)
+	for i := 0; i < threads; i++ {
+		w.Add(1)
+		testRead(t, w)
 	}
+	w.Wait()
 }
 
-func testRead(str string, t *testing.T) {
+func testRead(t *testing.T, w *sync.WaitGroup) {
+	for _, s := range testStrings {
+		testReadHelper(s, t)
+	}
+	w.Done()
+}
+
+func testReadHelper(str string, t *testing.T) {
 	rdr := strings.NewReader(str)
 	n := len(str)
 	n, strPrime, err := Read(rdr, n)
@@ -38,12 +55,22 @@ func testRead(str string, t *testing.T) {
 }
 
 func TestWrite(t *testing.T) {
-	for _, s := range testStrings {
-		testWrite(s, t)
+	w := new(sync.WaitGroup)
+	for i := 0; i < threads; i++ {
+		w.Add(1)
+		go testWrite(t, w)
 	}
+	w.Wait()
 }
 
-func testWrite(str string, t *testing.T) {
+func testWrite(t *testing.T, w *sync.WaitGroup) {
+	for _, s := range testStrings {
+		testWriteHelper(s, t)
+	}
+	w.Done()
+}
+
+func testWriteHelper(str string, t *testing.T) {
 	// Capacity of slice must be 0
 	// otherwise leading bytes will
 	// be counted as part of the buffer
@@ -63,14 +90,24 @@ func testWrite(str string, t *testing.T) {
 }
 
 func TestReadAt(t *testing.T) {
-	for _, s := range testStrings {
-		for i := int64(0); i < 1024; i++ {
-			testReadAt(s, i, t)
-		}
+	w := new(sync.WaitGroup)
+	for i := 0; i < threads; i++ {
+		w.Add(1)
+		go testReadAt(t, w)
 	}
+	w.Wait()
 }
 
-func testReadAt(str string, off int64, t *testing.T) {
+func testReadAt(t *testing.T, w *sync.WaitGroup) {
+	for _, s := range testStrings {
+		for i := int64(0); i < 1024; i++ {
+			testReadAtHelper(s, i, t)
+		}
+	}
+	w.Done()
+}
+
+func testReadAtHelper(str string, off int64, t *testing.T) {
 	b := make([]byte, int(off)+len(str))
 	for i := int(off); i < len(b); i++ {
 		b[i] = str[i-int(off)]
@@ -91,7 +128,7 @@ func TestLeastPowerGreaterThan(t *testing.T) {
 	testLeastPowerGreaterThan(0, 0, t)
 
 	// This test should take around 2 seconds.
-	// Increase by 2 to reduce runtime; it
+	// "i += 2" to reduce runtime; it
 	// is still a sufficient test.
 	for i := 0; i < 32; i += 2 {
 		target := 1 << uint(i-1)
