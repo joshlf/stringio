@@ -4,7 +4,7 @@ Use of this source code is governed by a BSD-style
 license that can be found in the LICENSE file.
 -->
 
-stringio
+stringio [![Build Status](https://travis-ci.org/joshlf13/stringio.svg?branch=master)](https://travis-ci.org/joshlf13/stringio)
 ========
 
 Convenience functions to allow using strings as input to various "io" package interface functions.
